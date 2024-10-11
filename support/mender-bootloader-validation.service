@@ -1,0 +1,11 @@
+[Unit]
+Description=Mender bootloader integration validation service
+After=mender-updated.service data.mount
+
+[Service]
+Type=oneshot
+ExecStart=/usr/share/mender-validation/mender-bootloader-validation.py
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
