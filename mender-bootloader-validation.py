@@ -383,7 +383,7 @@ elif s == state.STEP_TEST_UPDATE:
         logger.info(fail_reason)
         keep_going = False
     if keep_going and not set_env_variable(state, ENV_KEY_UPGRADE, str(0)):
-        fail_reason = f"failed to set {ENV_KEY_UPGRADE}
+        fail_reason = f"failed to set {ENV_KEY_UPGRADE}"
         logger.info(fail_reason)
         keep_going = False
     if keep_going:
@@ -527,4 +527,4 @@ else:
     if fail_reason == None:
         logger.info("BOOTLOADER VALIDATION: SUCCESS")
     else:
-        logger.info(f"BOOTLOADER VALIDATION: FAILURE - {fail_reason}"
+        logger.info(f"BOOTLOADER VALIDATION: FAILURE - {fail_reason}")
