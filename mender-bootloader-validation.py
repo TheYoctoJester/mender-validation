@@ -343,6 +343,7 @@ except RuntimeError:
 #   where applicable                                                          #
 ###############################################################################
 keep_going = True
+fail_reason = None
 current_root = identify_mounted_root(state)
 
 # if applicable handle outcome of last step
@@ -356,28 +357,34 @@ elif s == state.STEP_TEST_SWITCH:
     if expected == current_root:
         logger.info("switch test successful")
     else:
-        logger.info("switch test failed")
+        fail_reason = "switch test failed"
+        logger.info(fail_reason)
         keep_going = False
 elif s == state.STEP_TEST_UPDATE:
     logger.info("tested update")
     # check the successful switch during the update
     expected = state.get_expected_root()
     if expected != current_root:
-        logger.info(f"update test did not match expected root: {expected}")
+        fail_reason = f"update test did not match expected root: {expected}"
+        logger.info(fail_reason)
         keep_going = False
     # check if the boot environment matches expectitations
     if not assert_env_variable(state, ENV_KEY_BOOTCOUNT, str(1)):
-        logger.info(f"failed {ENV_KEY_BOOTCOUNT} assertion")
-        keep_going = False 
+        fail_reason = f"failed {ENV_KEY_BOOTCOUNT} assertion"
+        logger.info(fail_reason)
+        keep_going = False
     if not assert_env_variable(state, ENV_KEY_UPGRADE, str(1)):
-        logger.info(f"failed {ENV_KEY_UPGRADE} assertion")
+        fail_reason = f"failed {ENV_KEY_UPGRADE} assertion"
+        logger.info(fail_reason)
         keep_going = False
     # clean up boot environment
     if keep_going and not set_env_variable(state, ENV_KEY_BOOTCOUNT, str(0)):
-        logger.info(f"failed to set {ENV_KEY_BOOTCOUNT}")
+        fail_reason = f"failed to set {ENV_KEY_BOOTCOUNT}"
+        logger.info(fail_reason)
         keep_going = False
     if keep_going and not set_env_variable(state, ENV_KEY_UPGRADE, str(0)):
-        logger.info(f"failed to set {ENV_KEY_UPGRADE}")
+        fail_reason = f"failed to set {ENV_KEY_UPGRADE}
+        logger.info(fail_reason)
         keep_going = False
     if keep_going:
         logger.info("update test successful")
@@ -385,19 +392,23 @@ elif s == state.STEP_TEST_ROLLBACK:
     # check the successful rollback!
     # 1: upgrade should not be marked as available anymore
     if not assert_env_variable(state, ENV_KEY_UPGRADE, str(0)):
-        logger.info(f"failed {ENV_KEY_UPGRADE} assertion")
+        fail_reason = f"failed {ENV_KEY_UPGRADE} assertion"
+        logger.info(fail_reason)
         keep_going = False
     # 2: check for the expected root filesystem
     expected = state.get_expected_root()
     if expected != current_root:
-        logger.info(f"rollback test did not match expected root: {expected}")
+        fail_reason = f"rollback test did not match expected root: {expected}"
+        logger.info(fail_reason)
         keep_going = False
     # 3: clean up bootloader environment
     if keep_going and not set_env_variable(state, ENV_KEY_BOOTCOUNT, str(0)):
-        logger.info(f"failed to set {ENV_KEY_BOOTCOUNT}")
+        fail_reason = f"failed to set {ENV_KEY_BOOTCOUNT}"
+        logger.info(fail_reason)
         keep_going = False
     if keep_going and not set_env_variable(state, ENV_KEY_UPGRADE, str(0)):
-        logger.info(f"failed to set {ENV_KEY_UPGRADE}")
+        fail_reason = f"failed to set {ENV_KEY_UPGRADE}"
+        logger.info(fail_reason)
         keep_going = False
     if keep_going:
         logger.info("rollback test successful")
@@ -425,18 +436,22 @@ elif s == state.STEP_TEST_SWITCH:
         if set_mender_bootpart(state, inactive[INACTIVE_PART_NUMBER]):
             state.set_expected_root(inactive[INACTIVE_PART_IDENT])
         else:
-            logger.info(f"failed to set boot partition {inactive[INACTIVE_PART_IDENT]}")
+            fail_reason = f"failed to set boot partition {inactive[INACTIVE_PART_IDENT]}"
+            logger.info(fail_reason)
             keep_going = False
     else:
-        logger.info("could not identify partition numbers for switch, aborting")
+        fail_reason = "could not identify partition numbers for switch, aborting"
+        logger.info(fail_reason)
         keep_going = False
 elif s == state.STEP_TEST_UPDATE:
     if keep_going and not set_env_variable(state, ENV_KEY_BOOTCOUNT, str(0)):
-        logger.info("failed to set {ENV_KEY_BOOTCOUNT}")
+        fail_reason = "failed to set {ENV_KEY_BOOTCOUNT}"
+        logger.info(fail_reason)
         keep_going = False
 
     if keep_going and not set_env_variable(state, ENV_KEY_UPGRADE, str(1)):
-        logger.info("failed to set {ENV_KEY_UPGRADE}")
+        fail_reason = "failed to set {ENV_KEY_UPGRADE}"
+        logger.info(fail_reason)
         keep_going = False
 
     inactive = get_inactive_bootpart_info(state, current_root)
@@ -444,10 +459,12 @@ elif s == state.STEP_TEST_UPDATE:
         if set_mender_bootpart(state, inactive[INACTIVE_PART_NUMBER]):
             state.set_expected_root(inactive[INACTIVE_PART_IDENT])
         else:
-            logger.info(f"failed to set boot partition {inactive[INACTIVE_PART_IDENT]}")
+            fail_reason = f"failed to set boot partition {inactive[INACTIVE_PART_IDENT]}"
+            logger.info(fail_reason)
             keep_going = False
     else:
-        logger.info("could not identify partition numbers for update, aborting")
+        fail_reason = "could not identify partition numbers for update, aborting"
+        logger.info(fail_reason)
         keep_going = False
 elif s == state.STEP_TEST_ROLLBACK:
     # preparing for rollback test
@@ -460,29 +477,35 @@ elif s == state.STEP_TEST_ROLLBACK:
             logger.info('created temporary directory', tmpdirname)
             # 2: mount inactive patition
             if not run_command(["mount", inactive[INACTIVE_PART_DEVICE], tmpdirname]):
-                logger.info(f"failed to mount {inactive[INACTIVE_PART_DEVICE]} to {tmpdirname}, aborting")
+                fail_reason = f"failed to mount {inactive[INACTIVE_PART_DEVICE]} to {tmpdirname}, aborting"
+                logger.info(fail_reason)
                 keep_going = False
             # 3: break the inactive partition by renaming the boot directory -> bootloader won't be able to load a kernel anymore
             if keep_going:
                 try:
                     os.rename(os.path.join(tmpdirname, BOOT_DIRECTORY), os.path.join(tmpdirname, BOOT_DIRECTORY_DEFUNCT))
                 except: # again, could be in finer granularity
-                    logger.info(f"failed to rename {BOOT_DIRECTORY} in {tmpdirname}, aborting")
+                    fail_reason = f"failed to rename {BOOT_DIRECTORY} in {tmpdirname}, aborting"
+                    logger.info(fail_reason)
                     keep_going = False
             # 4: unmount inactive partition
             if keep_going and not run_command(["umount", tmpdirname]):
-                logger.info(f"failed to unmount {tmpdirname}")
+                fail_reason = f"failed to unmount {tmpdirname}"
+                logger.info(fail_reason)
                 keep_going = False
             # 5: set update available in bootloader
             if keep_going and not set_env_variable(state, ENV_KEY_BOOTCOUNT, str(0)):
-                logger.info(f"failed to set {ENV_KEY_BOOTCOUNT}")
+                fail_reason = f"failed to set {ENV_KEY_BOOTCOUNT}"
+                logger.info(fail_reason)
                 keep_going = False
             if keep_going and not set_env_variable(state, ENV_KEY_UPGRADE, str(1)):
-                logger.info(f"failed to set {ENV_KEY_UPGRADE}")
+                fail_reason = f"failed to set {ENV_KEY_UPGRADE}"
+                logger.info(fail_reason)
                 keep_going = False
             # 6: instruct bootloader to switch to the inactive partition
             if keep_going and not set_mender_bootpart(state, inactive[INACTIVE_PART_NUMBER]):
-                logger.info(f"failed to set boot partition {inactive[INACTIVE_PART_IDENT]}")
+                fail_reason = f"failed to set boot partition {inactive[INACTIVE_PART_IDENT]}"
+                logger.info(fail_reason)
                 keep_going = False
             # 7: set expected root the the current, active one (as we expect the bootloader to roll back)
             if keep_going:
@@ -501,3 +524,7 @@ else:
     # we are done, no need to invoke the script again.
     run_command(["systemctl", "disable", "mender-bootloader-validation.service"])
     state.clean()
+    if fail_reason == None:
+        logger.info("BOOTLOADER VALIDATION: SUCCESS")
+    else:
+        logger.info(f"BOOTLOADER VALIDATION: FAILURE - {fail_reason}"
