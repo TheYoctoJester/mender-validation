@@ -929,6 +929,154 @@ class TrybootBackend(BootloaderBackend):
             os.remove(self.TRYBOOT_PENDING_FLAG)
         except:
             pass
+class TegraBackend(BootloaderBackend):
+    """NVIDIA Tegra UEFI A/B bootloader backend (JetPack 5/6).
+
+    Uses nvbootctrl for slot management. The slot numbering is:
+      slot 0 = APP (rootfsA), slot 1 = APP_b (rootfsB).
+    The libubootenv-fake shim provides fw_printenv/fw_setenv but only
+    upgrade_available actually works via fw_setenv; mender_boot_part
+    and bootcount sets are silently ignored. This backend bypasses the
+    shims and drives nvbootctrl directly.
+    """
+    backend_name = "tegra"
+
+    UPGRADE_AVAILABLE_FLAG = "var/lib/mender/upgrade_available"
+
+    @classmethod
+    def detect(cls):
+        return check_for_command("nvbootctrl")
+
+    def _get_current_slot(self):
+        return run_command_get_output(["nvbootctrl", "get-current-slot"])
+
+    def _set_active_slot(self, slot):
+        return run_command(["nvbootctrl", "set-active-boot-slot", str(slot)])
+
+    def _mark_successful(self):
+        return run_command(["nvbootctrl", "mark-boot-successful"])
+
+    def _verify_slot(self):
+        return run_command(["/usr/sbin/nvbootctrl", "verify"])
+
+    def _set_slot_unbootable(self, slot):
+        return run_command(["nvbootctrl", "set-slot-as-unbootable", str(slot)])
+
+    def _slot_for_root(self, root_ident):
+        """Map CURRENT_ROOT_A -> '0', CURRENT_ROOT_B -> '1'."""
+        if root_ident == CURRENT_ROOT_A:
+            return "0"
+        elif root_ident == CURRENT_ROOT_B:
+            return "1"
+        return None
+
+    def _inactive_slot(self, slot):
+        return "1" if str(slot) == "0" else "0"
+
+    def _upgrade_flag_path(self):
+        return os.path.join(root_path, self.UPGRADE_AVAILABLE_FLAG)
+
+    def _set_upgrade_available(self, available):
+        flag = self._upgrade_flag_path()
+        if available:
+            os.makedirs(os.path.dirname(flag), exist_ok=True)
+            with open(flag, 'w') as f:
+                f.write("")
+        else:
+            try:
+                os.remove(flag)
+            except FileNotFoundError:
+                pass
+
+    def _is_upgrade_available(self):
+        return os.path.exists(self._upgrade_flag_path())
+
+    def evaluate_switch(self, state, current_root):
+        expected = state.get_expected_root()
+        if expected == current_root:
+            logger.info("tegra: switch test successful")
+            return True, None
+        return False, f"tegra: switch test failed, expected {expected} got {current_root}"
+
+    def evaluate_update(self, state, current_root):
+        expected = state.get_expected_root()
+        if expected != current_root:
+            return False, f"tegra: update test did not match expected root: {expected}"
+        if not self._is_upgrade_available():
+            return False, "tegra: upgrade_available flag missing after update reboot"
+        # Commit the update
+        if not self._verify_slot():
+            return False, "tegra: nvbootctrl verify failed during commit"
+        if not self._mark_successful():
+            return False, "tegra: nvbootctrl mark-boot-successful failed during commit"
+        self._set_upgrade_available(False)
+        logger.info("tegra: update test successful, committed")
+        return True, None
+
+    def evaluate_rollback(self, state, current_root):
+        expected = state.get_expected_root()
+        if expected != current_root:
+            return False, f"tegra: rollback test failed, expected {expected} got {current_root}"
+        # Clean up: restore clean state on the current (original) slot
+        self._verify_slot()
+        self._mark_successful()
+        self._set_upgrade_available(False)
+        logger.info("tegra: rollback test successful, UEFI fell back correctly")
+        return True, None
+
+    def prepare_switch(self, state, current_root):
+        inactive = get_inactive_bootpart_info(state, current_root)
+        if inactive is None:
+            return False, "tegra: could not identify partitions for switch"
+        inactive_slot = self._slot_for_root(inactive[INACTIVE_PART_IDENT])
+        if inactive_slot is None:
+            return False, "tegra: could not map inactive partition to slot"
+        if not self._set_active_slot(inactive_slot):
+            return False, f"tegra: failed to set active slot {inactive_slot}"
+        state.set_expected_root(inactive[INACTIVE_PART_IDENT])
+        logger.info(f"tegra: switch prepared, set active slot {inactive_slot}")
+        return True, None
+
+    def prepare_update(self, state, current_root):
+        inactive = get_inactive_bootpart_info(state, current_root)
+        if inactive is None:
+            return False, "tegra: could not identify partitions for update"
+        inactive_slot = self._slot_for_root(inactive[INACTIVE_PART_IDENT])
+        if inactive_slot is None:
+            return False, "tegra: could not map inactive partition to slot"
+        if not self._set_active_slot(inactive_slot):
+            return False, f"tegra: failed to set active slot {inactive_slot}"
+        self._set_upgrade_available(True)
+        state.set_expected_root(inactive[INACTIVE_PART_IDENT])
+        logger.info(f"tegra: update prepared, set active slot {inactive_slot}, upgrade_available set")
+        return True, None
+
+    def prepare_rollback(self, state, current_root):
+        inactive = get_inactive_bootpart_info(state, current_root)
+        if inactive is None:
+            return False, "tegra: could not identify partitions for rollback"
+        inactive_slot = self._slot_for_root(inactive[INACTIVE_PART_IDENT])
+        if inactive_slot is None:
+            return False, "tegra: could not map inactive partition to slot"
+        # Set inactive slot as active target
+        if not self._set_active_slot(inactive_slot):
+            return False, f"tegra: failed to set active slot {inactive_slot}"
+        # Mark it unbootable so UEFI falls back immediately
+        if not self._set_slot_unbootable(inactive_slot):
+            return False, f"tegra: failed to set slot {inactive_slot} as unbootable"
+        self._set_upgrade_available(True)
+        # We expect to stay on the current root after UEFI fallback
+        state.set_expected_root(current_root)
+        logger.info(f"tegra: rollback prepared, set slot {inactive_slot} active+unbootable, expecting fallback")
+        return True, None
+
+    def reboot(self, state):
+        run_command(["reboot"])
+
+    def cleanup(self, state):
+        self._set_upgrade_available(False)
+        self._verify_slot()
+        self._mark_successful()
 ###############################################################################
 # section end: bootloader backend abstraction                                 #
 ###############################################################################
@@ -939,9 +1087,10 @@ class TrybootBackend(BootloaderBackend):
 def detect_backend():
     """Detect the active bootloader backend.
     Tryboot is checked first because a tryboot system may also have
-    fw_printenv from meta-mender dependencies."""
-    # Detection order matters: tryboot first
-    for cls in [TrybootBackend, UBootBackend, GrubBackend]:
+    fw_printenv from meta-mender dependencies. Tegra is checked before
+    UBoot because Tegra systems have a fake fw_printenv shim."""
+    # Detection order matters: tryboot first, then tegra, then uboot/grub
+    for cls in [TrybootBackend, TegraBackend, UBootBackend, GrubBackend]:
         if cls.detect():
             logger.info(f"detected bootloader backend: {cls.backend_name}")
             return cls()
@@ -950,7 +1099,7 @@ def detect_backend():
 
 def restore_backend(backend_name):
     """Recreate the backend from a persisted name."""
-    for cls in [TrybootBackend, UBootBackend, GrubBackend]:
+    for cls in [TrybootBackend, TegraBackend, UBootBackend, GrubBackend]:
         if cls.backend_name == backend_name:
             return cls()
     return None
