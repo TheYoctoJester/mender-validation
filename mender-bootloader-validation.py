@@ -590,12 +590,16 @@ class TrybootBackend(BootloaderBackend):
                             else:
                                 logger.info("tryboot: device-tree present but autoboot.txt missing tryboot_a_b=1")
                                 return False
-                        run_command(["umount", mnt])
+                        else:
+                            run_command(["umount", mnt])
+                            logger.info("tryboot: device-tree present but no autoboot.txt on partition")
+                            return False
                     else:
-                        logger.info("tryboot: mount of autoboot partition failed, trusting device-tree detection")
+                        logger.info("tryboot: device-tree present but mount failed, not tryboot")
+                        return False
             except Exception as e:
-                logger.info(f"tryboot: autoboot.txt confirmation failed ({e}), trusting device-tree detection")
-            return True
+                logger.info(f"tryboot: autoboot.txt confirmation failed ({e}), not tryboot")
+            return False
 
         # Fallback: try mounting and checking autoboot.txt directly
         try:
