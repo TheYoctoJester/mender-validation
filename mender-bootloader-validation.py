@@ -54,6 +54,19 @@ def run_command_get_output(cmd):
         return None
     except: # technically this could hide some valid exceptions to handle, but lets move forward for now.
         return None
+
+def find_mountpoint(device):
+    """Return the mountpoint of a device if already mounted, or None."""
+    try:
+        result = subprocess.run(
+            ["findmnt", "-n", "-o", "TARGET", "-f", device],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        if result.returncode == 0:
+            return result.stdout.decode().strip() or None
+    except Exception:
+        pass
+    return None
 ###############################################################################
 # section end: process running utilites                                       #
 ###############################################################################
@@ -565,6 +578,25 @@ class TrybootBackend(BootloaderBackend):
             logger.info(f"tryboot: injected {ROOTFS_B_KEY}={self.BOOT_TO_ROOT[3]}")
 
     @classmethod
+    def _mount_autoboot(cls, readonly=False):
+        """Mount the autoboot device and return (mountpoint, needs_umount).
+
+        If already mounted (e.g. via fstab), reuse that mountpoint.
+        Otherwise mount to a temporary directory."""
+        existing = find_mountpoint(cls.AUTOBOOT_DEVICE)
+        if existing:
+            logger.info(f"tryboot: {cls.AUTOBOOT_DEVICE} already mounted at {existing}")
+            return existing, False
+        mnt = tempfile.mkdtemp(prefix="mender-autoboot-")
+        mount_cmd = ["mount", cls.AUTOBOOT_DEVICE, mnt]
+        if readonly:
+            mount_cmd = ["mount", "-o", "ro", cls.AUTOBOOT_DEVICE, mnt]
+        if run_command(mount_cmd):
+            return mnt, True
+        os.rmdir(mnt)
+        return None, False
+
+    @classmethod
     def detect(cls):
         """Detect tryboot via device tree, then verify autoboot.txt on mmcblk0p1.
 
@@ -577,13 +609,13 @@ class TrybootBackend(BootloaderBackend):
             logger.info("tryboot: detected via device-tree bootloader/partition node")
             # Confirm by checking autoboot.txt (best-effort, don't fail if mount fails)
             try:
-                with tempfile.TemporaryDirectory() as mnt:
-                    if run_command(["mount", "-o", "ro", cls.AUTOBOOT_DEVICE, mnt]):
+                mnt, needs_umount = cls._mount_autoboot(readonly=True)
+                if mnt:
+                    try:
                         autoboot_path = os.path.join(mnt, "autoboot.txt")
                         if os.path.exists(autoboot_path):
                             with open(autoboot_path, 'r') as f:
                                 content = f.read()
-                            run_command(["umount", mnt])
                             if "tryboot_a_b=1" in content:
                                 logger.info("tryboot: confirmed via autoboot.txt")
                                 return True
@@ -591,22 +623,26 @@ class TrybootBackend(BootloaderBackend):
                                 logger.info("tryboot: device-tree present but autoboot.txt missing tryboot_a_b=1")
                                 return False
                         else:
-                            run_command(["umount", mnt])
                             logger.info("tryboot: device-tree present but no autoboot.txt on partition")
                             return False
-                    else:
-                        logger.info("tryboot: device-tree present but mount failed, not tryboot")
-                        return False
+                    finally:
+                        if needs_umount:
+                            run_command(["umount", mnt])
+                            os.rmdir(mnt)
+                else:
+                    logger.info("tryboot: device-tree present but mount failed, not tryboot")
+                    return False
             except Exception as e:
                 logger.info(f"tryboot: autoboot.txt confirmation failed ({e}), not tryboot")
             return False
 
         # Fallback: try mounting and checking autoboot.txt directly
         try:
-            with tempfile.TemporaryDirectory() as mnt:
-                if not run_command(["mount", "-o", "ro", cls.AUTOBOOT_DEVICE, mnt]):
-                    logger.info("tryboot: no device-tree node and mount failed, not tryboot")
-                    return False
+            mnt, needs_umount = cls._mount_autoboot(readonly=True)
+            if not mnt:
+                logger.info("tryboot: no device-tree node and mount failed, not tryboot")
+                return False
+            try:
                 autoboot_path = os.path.join(mnt, "autoboot.txt")
                 found = False
                 if os.path.exists(autoboot_path):
@@ -614,8 +650,11 @@ class TrybootBackend(BootloaderBackend):
                         content = f.read()
                     if "tryboot_a_b=1" in content:
                         found = True
-                run_command(["umount", mnt])
                 return found
+            finally:
+                if needs_umount:
+                    run_command(["umount", mnt])
+                    os.rmdir(mnt)
         except:
             return False
 
@@ -683,15 +722,18 @@ class TrybootBackend(BootloaderBackend):
 
     def _with_autoboot_mounted(self, callback):
         """Mount autoboot partition, run callback(mount_point), unmount.
-        Returns callback result or (False, error_msg) on mount failure."""
-        with tempfile.TemporaryDirectory() as mnt:
-            if not run_command(["mount", self.AUTOBOOT_DEVICE, mnt]):
-                return False, f"failed to mount {self.AUTOBOOT_DEVICE}"
-            try:
-                result = callback(mnt)
-            finally:
+        Returns callback result or (False, error_msg) on mount failure.
+        If already mounted (e.g. via fstab), reuses the existing mountpoint."""
+        mnt, needs_umount = self._mount_autoboot()
+        if not mnt:
+            return False, f"failed to mount {self.AUTOBOOT_DEVICE}"
+        try:
+            result = callback(mnt)
+        finally:
+            if needs_umount:
                 run_command(["umount", mnt])
-            return result
+                os.rmdir(mnt)
+        return result
 
     def evaluate_switch(self, state, current_root):
         expected = state.get_expected_root()
