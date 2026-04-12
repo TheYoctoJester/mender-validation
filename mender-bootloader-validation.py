@@ -1275,6 +1275,16 @@ else:
     backend.cleanup(state)
     state.clean()
     if fail_reason == None:
-        logger.info("BOOTLOADER VALIDATION: SUCCESS")
+        marker = "BOOTLOADER VALIDATION: SUCCESS"
     else:
-        logger.info(f"BOOTLOADER VALIDATION: FAILURE - {fail_reason}")
+        marker = f"BOOTLOADER VALIDATION: FAILURE - {fail_reason}"
+    logger.info(marker)
+
+    # Echo marker to kernel console so serial monitors can detect completion
+    # without waiting for the full timeout. The kernel routes /dev/console to
+    # whatever console= device is on the cmdline (e.g. ttyS0, ttyAMA0).
+    try:
+        with open("/dev/console", "w") as console:
+            console.write(marker + "\n")
+    except OSError:
+        pass
