@@ -1280,11 +1280,15 @@ else:
         marker = f"BOOTLOADER VALIDATION: FAILURE - {fail_reason}"
     logger.info(marker)
 
-    # Echo marker to kernel console so serial monitors can detect completion
-    # without waiting for the full timeout. The kernel routes /dev/console to
-    # whatever console= device is on the cmdline (e.g. ttyS0, ttyAMA0).
-    try:
-        with open("/dev/console", "w") as console:
-            console.write(marker + "\n")
-    except OSError:
-        pass
+    # Echo marker to serial ports and kernel console so serial monitors
+    # can detect completion without waiting for the full timeout.
+    # /dev/console routes through the VT subsystem (tty0) which has no
+    # output on headless systems, so we also write directly to common
+    # serial devices. Failures are silently ignored — not all devices
+    # exist on every platform.
+    for dev in ["/dev/ttyS0", "/dev/ttyAMA0", "/dev/ttyO0", "/dev/console"]:
+        try:
+            with open(dev, "w") as f:
+                f.write(marker + "\n")
+        except OSError:
+            pass
