@@ -1292,3 +1292,16 @@ else:
                 f.write(marker + "\n")
         except OSError:
             pass
+
+    # If a test harness placed a poweroff-after-validation marker on the
+    # data partition, shut down the system so the harness can detect
+    # completion via process exit rather than serial/network monitoring.
+    # This is used by QEMU validation tests where serial output buffering
+    # makes real-time marker detection unreliable.
+    import pathlib
+    if pathlib.Path("/data/poweroff-after-validation").exists():
+        logger.info("poweroff-after-validation marker found, shutting down")
+        import subprocess, time
+        time.sleep(5)  # let filesystem sync
+        subprocess.run(["sync"])
+        subprocess.run(["poweroff"])
